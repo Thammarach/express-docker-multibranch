@@ -1,0 +1,20 @@
+services:
+  app-dev:
+    # สร้าง image จาก Dockerfile แต่จะใช้แค่ 'builder' stage เป็นฐาน
+    # เพื่อให้มี devDependencies ครบ
+    build:
+      context: .
+      target: builder # <-- บอกให้ build ถึงแค่ stage 'builder'
+    container_name: ts-app-dev-instance
+    ports:
+      - "3002:3000"
+    volumes:
+      # เชื่อมโค้ดจากเครื่องเราเข้าไปใน container แบบ Real-time
+      - ./src:/app/src
+      - ./package.json:/app/package.json
+      - ./package-lock.json:/app/package-lock.json
+      - ./tsconfig.json:/app/tsconfig.json
+      # ไม่ต้อง map node_modules เพื่อให้ใช้ของใน container
+      - /app/node_modules
+    # สั่งให้รันด้วย script "dev" ที่เราสร้างไว้
+    command: npm run start:ts
