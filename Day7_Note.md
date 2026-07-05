@@ -523,7 +523,7 @@ app.get('/api/orders', (_: Request, res: Response) => {
 ![Jenkins Multibranch Pipeline Config](https://www.itgenius.co.th/assets/frondend/images/course_detail/devopsjenkins/itgn-1186.jpg)
 
 - **Discover branches:** Exclude branches that are also filed as PRs (ป้องกันการสร้าง job ซ้ำซ้อนระหว่าง branch กับ PR)
-- **Discover pull requests from origin:** The current pull request revision (สร้าง job สำหรับ PR จาก origin)
+ - **Discover pull requests from origin:** The current pull request revision (สร้าง job สำหรับ PR จาก origin)
 - **Discover pull requests from forks:** The current pull request revision (สร้าง job สำหรับ PR จาก forks)
 - กำหนด "strategy" เป็น The current pull request revision 
 - กำหนด "Trust" เป็น From users with Admin or Write permission
