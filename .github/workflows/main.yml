@@ -17,7 +17,7 @@ on:
   
   # รันแบบ Manual (Workflow Dispatch) พร้อม input parameters
   workflow_dispatch:
-    inputs: # Take action
+    inputs:
       action:
         description: 'เลือก Action ที่ต้องการ'
         required: true
