@@ -1,0 +1,351 @@
+# ชื่อของ Workflow ที่จะแสดงในหน้า Actions ของ GitHub
+name: CI/CD - Express Docker App
+
+# กำหนด Trigger Events
+on:
+  # รันอัตโนมัติเมื่อมี push ไปยัง branch develop หรือ main
+  push:
+    branches:
+      - develop
+      - main
+  
+  # รันอัตโนมัติเมื่อมี pull request ไปยัง branch develop หรือ main
+  pull_request:
+    branches:
+      - develop
+      - main
+  
+  # รันแบบ Manual (Workflow Dispatch) พร้อม input parameters
+  workflow_dispatch:
+    inputs: # Take action
+      action:
+        description: 'เลือก Action ที่ต้องการ'
+        required: true
+        type: choice
+        options:
+          - 'Build & Deploy'
+          - 'Rollback'
+        default: 'Build & Deploy'
+      rollback_tag:
+        description: 'สำหรับ Rollback: ใส่ Image Tag ที่ต้องการ (เช่น Git Hash หรือ dev-123)'
+        required: false
+        type: string
+      rollback_target:
+        description: 'สำหรับ Rollback: เลือกว่าจะ Rollback ที่ Environment ไหน'
+        required: false
+        type: choice
+        options:
+          - 'dev'
+          - 'prod'
+        default: 'dev'
+
+# กำหนด Environment Variables ระดับ Workflow
+env:
+  DOCKER_REPO: thammarach/express-docker-app
+  DEV_APP_NAME: express-app-dev
+  DEV_HOST_PORT: 3001
+  PROD_APP_NAME: express-app-prod
+  PROD_HOST_PORT: 3000
+
+# กำหนด Jobs
+jobs:
+  # =================================================================
+  # JOB 1: BUILD & TEST
+  # =================================================================
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    # รันเฉพาะเมื่อเลือก 'Build & Deploy' หรือเป็น push/pull_request
+    if: github.event.inputs.action != 'Rollback'
+    
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.tag }}
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      
+      # Step 4: Run tests
+      - name: Run tests
+        run: npm test
+      
+      # Step 5: Set image tag
+      - name: Set image tag
+        id: set-tag
+        run: |
+          if [ "${{ github.ref_name }}" == "main" ]; then
+            TAG=$(git rev-parse --short HEAD)
+          else
+            TAG="dev-${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Image tag will be: $TAG"
+  
+  # =================================================================
+  # JOB 2: BUILD & PUSH DOCKER IMAGE
+  # =================================================================
+  build-and-push-docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event.inputs.action != 'Rollback'
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      # Step 3: Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      # Step 4: Build and push Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: production
+          push: true
+          tags: |
+            ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}
+            ${{ github.ref_name == 'main' && format('{0}:latest', env.DOCKER_REPO) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      # Step 5: Image digest
+      - name: Image digest
+        run: echo "Image pushed with tag ${{ needs.build-and-test.outputs.image_tag }}"
+  
+  # =================================================================
+  # JOB 3: DEPLOY TO DEV (เมื่อเป็น branch develop)
+  # =================================================================
+  deploy-dev:
+    name: Deploy to DEV
+    runs-on: ubuntu-latest
+    needs: [build-and-test, build-and-push-docker]
+    if: github.ref_name == 'develop' && github.event.inputs.action != 'Rollback'
+    environment:
+      name: development
+      url: http://localhost:${{ env.DEV_HOST_PORT }}
+    
+    steps:
+      # Step 1: Deploy to DEV (Local Docker)
+      # หมายเหตุ: ในกรณีจริง คุณจะต้องใช้ SSH หรือ Self-hosted runner
+      - name: Deploy to DEV environment
+        run: |
+          echo "Deploying to DEV environment..."
+          echo "Image: ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}"
+          echo "Container: ${{ env.DEV_APP_NAME }}"
+          echo "Port: ${{ env.DEV_HOST_PORT }}"
+          
+          # ตัวอย่างคำสั่ง (ต้องใช้ self-hosted runner หรือ SSH)
+          # docker pull ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}
+          # docker stop ${{ env.DEV_APP_NAME }} || true
+          # docker rm ${{ env.DEV_APP_NAME }} || true
+          # docker run -d --name ${{ env.DEV_APP_NAME }} -p ${{ env.DEV_HOST_PORT }}:3000 \
+          #   ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}
+      
+      # Step 2: Send notification to n8n
+      - name: Send success notification to n8n
+        if: success()
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          curl -X POST ${{ secrets.N8N_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"project\": \"${{ github.repository }}\",
+              \"stage\": \"Deploy to DEV\",
+              \"status\": \"success\",
+              \"build\": \"${{ github.run_number }}\",
+              \"image\": \"${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}\",
+              \"container\": \"${{ env.DEV_APP_NAME }}\",
+              \"url\": \"http://localhost:${{ env.DEV_HOST_PORT }}/\",
+              \"timestamp\": \"${TIMESTAMP}\"
+            }" || echo "Failed to send notification"
+  
+  # =================================================================
+  # JOB 4: DEPLOY TO PROD (เมื่อเป็น branch main)
+  # =================================================================
+  # Job 4a: Approval for Production
+  approval-prod:
+    name: Approval for Production
+    runs-on: ubuntu-latest
+    needs: [build-and-test, build-and-push-docker]
+    if: github.ref_name == 'main' && github.event.inputs.action != 'Rollback'
+    environment:
+      name: production-approval
+    
+    steps:
+      - name: Wait for approval
+        run: |
+          echo "🔐 Waiting for manual approval to deploy to production..."
+          echo "Image: ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}"
+          echo "This step requires approval from designated reviewers"
+  
+  # Job 4b: Deploy to Production
+  deploy-prod:
+    name: Deploy to PROD
+    runs-on: ubuntu-latest
+    needs: [build-and-test, build-and-push-docker, approval-prod]
+    if: github.ref_name == 'main' && github.event.inputs.action != 'Rollback'
+    environment:
+      name: production
+      url: http://localhost:${{ env.PROD_HOST_PORT }}
+    
+    steps:
+      # Step 1: Deploy to PROD (Local Docker)
+      - name: Deploy to PROD environment
+        run: |
+          echo "Deploying to PROD environment..."
+          echo "Image: ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}"
+          echo "Container: ${{ env.PROD_APP_NAME }}"
+          echo "Port: ${{ env.PROD_HOST_PORT }}"
+          
+          # ตัวอย่างคำสั่ง (ต้องใช้ self-hosted runner หรือ SSH)
+          # docker pull ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}
+          # docker stop ${{ env.PROD_APP_NAME }} || true
+          # docker rm ${{ env.PROD_APP_NAME }} || true
+          # docker run -d --name ${{ env.PROD_APP_NAME }} -p ${{ env.PROD_HOST_PORT }}:3000 \
+          #   ${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}
+      
+      # Step 2: Send notification to n8n
+      - name: Send success notification to n8n
+        if: success()
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          curl -X POST ${{ secrets.N8N_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"project\": \"${{ github.repository }}\",
+              \"stage\": \"Deploy to PROD\",
+              \"status\": \"success\",
+              \"build\": \"${{ github.run_number }}\",
+              \"image\": \"${{ env.DOCKER_REPO }}:${{ needs.build-and-test.outputs.image_tag }}\",
+              \"container\": \"${{ env.PROD_APP_NAME }}\",
+              \"url\": \"http://localhost:${{ env.PROD_HOST_PORT }}/\",
+              \"timestamp\": \"${TIMESTAMP}\"
+            }" || echo "Failed to send notification"
+  
+  # =================================================================
+  # JOB 5: ROLLBACK
+  # =================================================================
+  rollback:
+    name: Execute Rollback
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'Rollback'
+    environment:
+      name: ${{ github.event.inputs.rollback_target == 'prod' && 'production' || 'development' }}
+    
+    steps:
+      # Step 1: Validate rollback inputs
+      - name: Validate rollback inputs
+        run: |
+          if [ -z "${{ github.event.inputs.rollback_tag }}" ]; then
+            echo "Error: ROLLBACK_TAG is required when action is Rollback"
+            exit 1
+          fi
+          echo "Rolling back ${{ github.event.inputs.rollback_target }} to tag: ${{ github.event.inputs.rollback_tag }}"
+      
+      # Step 2: Execute rollback
+      - name: Rollback to previous version
+        run: |
+          TARGET_ENV="${{ github.event.inputs.rollback_target }}"
+          ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+          
+          if [ "$TARGET_ENV" == "dev" ]; then
+            APP_NAME="${{ env.DEV_APP_NAME }}"
+            HOST_PORT="${{ env.DEV_HOST_PORT }}"
+          else
+            APP_NAME="${{ env.PROD_APP_NAME }}"
+            HOST_PORT="${{ env.PROD_HOST_PORT }}"
+          fi
+          
+          IMAGE_TO_DEPLOY="${{ env.DOCKER_REPO }}:${ROLLBACK_TAG}"
+          
+          echo "Rolling back to: $IMAGE_TO_DEPLOY"
+          echo "Target environment: $TARGET_ENV"
+          echo "Container name: $APP_NAME"
+          echo "Port: $HOST_PORT"
+          
+          # ตัวอย่างคำสั่ง (ต้องใช้ self-hosted runner หรือ SSH)
+          # docker pull $IMAGE_TO_DEPLOY
+          # docker stop $APP_NAME || true
+          # docker rm $APP_NAME || true
+          # docker run -d --name $APP_NAME -p $HOST_PORT:3000 $IMAGE_TO_DEPLOY
+      
+      # Step 3: Send notification to n8n
+      - name: Send rollback notification to n8n
+        if: success()
+        run: |
+          TARGET_ENV="${{ github.event.inputs.rollback_target }}"
+          if [ "$TARGET_ENV" == "dev" ]; then
+            APP_NAME="${{ env.DEV_APP_NAME }}"
+            HOST_PORT="${{ env.DEV_HOST_PORT }}"
+          else
+            APP_NAME="${{ env.PROD_APP_NAME }}"
+            HOST_PORT="${{ env.PROD_HOST_PORT }}"
+          fi
+          
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          curl -X POST ${{ secrets.N8N_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"project\": \"${{ github.repository }}\",
+              \"stage\": \"Rollback ${TARGET_ENV^^}\",
+              \"status\": \"success\",
+              \"build\": \"${{ github.run_number }}\",
+              \"image\": \"${{ env.DOCKER_REPO }}:${{ github.event.inputs.rollback_tag }}\",
+              \"container\": \"${APP_NAME}\",
+              \"url\": \"http://localhost:${HOST_PORT}/\",
+              \"timestamp\": \"${TIMESTAMP}\"
+            }" || echo "Failed to send notification"
+  
+  # =================================================================
+  # JOB 6: NOTIFY ON FAILURE
+  # =================================================================
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [build-and-test, build-and-push-docker, deploy-dev, deploy-prod, rollback]
+    if: failure()
+    
+    steps:
+      - name: Send failure notification to n8n
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          curl -X POST ${{ secrets.N8N_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"project\": \"${{ github.repository }}\",
+              \"stage\": \"Pipeline Failed\",
+              \"status\": \"failed\",
+              \"build\": \"${{ github.run_number }}\",
+              \"image\": \"N/A\",
+              \"container\": \"N/A\",
+              \"url\": \"N/A\",
+              \"timestamp\": \"${TIMESTAMP}\"
+            }" || echo "Failed to send notification"
