@@ -46,5 +46,18 @@ app.get('/api/products', (_: Request, res: Response) => {
   res.json(products)
 })
 
+// GET /api/orders
+app.get('/api/orders', (_: Request, res: Response) => {
+  const orders = [
+    { id: 1, userId: 1, productId: 2, quantity: 1 },
+    { id: 2, userId: 2, productId: 3, quantity: 2 },
+    { id: 3, userId: 1, productId: 1, quantity: 1 },
+    { id: 4, userId: 2, productId: 4, quantity: 1 },
+    { id: 5, userId: 1, productId: 1, quantity: 1 },
+    { id: 6, userId: 2, productId: 4, quantity: 1 },
+  ]
+  res.json(orders)
+})
+
 // Start server
 app.listen(port, () => console.log(`Application is running on port ${port}`))
